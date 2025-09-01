@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+    branches:
+      - dev
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_type == 'tag' && 'production' || 'development' }}
+    permissions:
+      contents: write
+      packages: write
+
+    strategy:
+      matrix:
+        service: [blog]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Convert repo name to lowercase
+        run: echo "REPO_NAME=$(echo $GITHUB_REPOSITORY | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Build and push ${{ matrix.service }} container
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: |
+            ghcr.io/${{ env.REPO_NAME }}/${{ matrix.service }}:${{ github.ref_name }}
+          context: .
+          # file: ./apps/${{ matrix.service }}/Dockerfile
+          file: ./Dockerfile
+          # build-args: |
+          #   NEXT_PUBLIC_BACKEND_URL=${{ secrets.NEXT_PUBLIC_BACKEND_URL_PROD }}
+
+      - name: Deploy ${{ matrix.service }}
+        uses: deploys-app/deploys-action@v1
+        with:
+          project: ${{ secrets.DEPLOYS_PROJECT }}
+          location: ${{ secrets.DEPLOYS_LOCATION }}
+          name: ${{ matrix.service }}-${{ github.ref_type == 'tag' && 'production' || 'development' }}
+          image: ${{ github.ref_type == 'tag' &&
+            format('ghcr.io/{0}/{1}:{2}', env.REPO_NAME, matrix.service, github.ref_name) ||
+            format('ghcr.io/{0}/{1}@{2}', env.REPO_NAME, matrix.service, steps.docker_build.outputs.digest) }}
+          minReplicas: ${{ secrets.DEPLOYS_MIN != '' && secrets.DEPLOYS_MIN || 1 }}
+          maxReplicas: ${{ secrets.DEPLOYS_MAX != '' && secrets.DEPLOYS_MAX || 1 }}
+        env:
+          DEPLOYS_AUTH_USER: ${{ secrets.DEPLOYS_AUTH_USER }}
+          DEPLOYS_AUTH_PASS: ${{ secrets.DEPLOYS_AUTH_PASS }}
